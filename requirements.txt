@@ -1,0 +1,7 @@
+numpy
+pandas
+networkx
+rdflib
+rapidfuzz
+scipy
+matplotlib

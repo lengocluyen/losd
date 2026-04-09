@@ -1,0 +1,17 @@
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.ipynb_checkpoints/
+
+# local experiment outputs
+exp_out*/
+cache/
+
+# generated LOSD outputs
+journal_extension/
+plots/
+
+# OS/editor files
+.DS_Store
+Thumbs.db
