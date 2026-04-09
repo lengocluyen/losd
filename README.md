@@ -1,6 +1,6 @@
 # LOSD Public Release
 
-This directory is a cleaned public-facing subset of the original project for the journal extension around **LOSD** (LLM- and Ontology-Guided Skill Decomposition).
+This directory is a cleaned public-facing subset of the original project for **LOSD** (LLM- and Ontology-Guided Skill Decomposition).
 
 It contains:
 
@@ -26,21 +26,22 @@ github_public/
 ├── PUBLIC_RELEASE_NOTES.md
 ├── .gitignore
 ├── esco_cmo_binding.ttl
-├── journal_extension.py
-├── run_journal_extension.py
-├── plot_journal_results.py
-├── run_all_journal_extension.sh
-├── journal_extension_specification.md
+├── losd.py
+├── run_losd.py
+├── plot_losd_results.py
+├── run_all_losd.sh
+├── losd_specification.md
 ├── requirements.txt
 ├── requirements-transformer.txt
-├── test_journal_extension_unittest.py
+├── test_losd_unittest.py
 ├── tests/
-│   └── test_journal_extension.py
+│   └── test_losd.py
 └── sample_results/
-    └── journal_extension/
-        ├── journal_method_summary.csv
-        ├── journal_candidate_summary.csv
-        ├── journal_parent_results.csv
+    └── losd/
+        ├── losd_candidate_records.csv
+        ├── losd_method_summary.csv
+        ├── losd_candidate_summary.csv
+        ├── losd_parent_results.csv
         ├── gold_pairs.csv
         ├── parents.csv
         └── plots/
@@ -77,27 +78,27 @@ The runner expects:
 Example:
 
 ```bash
-python run_journal_extension.py --source-outdir exp_out_gpt_5
+python run_losd.py --source-outdir exp_out_gpt_5
 ```
 
-If you do not publish cached model outputs, users can still inspect the included sample results under `sample_results/journal_extension/`.
+If you do not publish cached model outputs, users can still inspect the included sample results under `sample_results/losd/`.
 
 ## Generate Figures
 
 ```bash
-python plot_journal_results.py --results-dir sample_results/journal_extension
+python plot_losd_results.py --results-dir sample_results/losd
 ```
 
 ## Tests
 
 ```bash
-python -m unittest test_journal_extension_unittest.py
+python -m unittest test_losd_unittest.py
 ```
 
 or
 
 ```bash
-python -m unittest tests.test_journal_extension
+python -m unittest tests.test_losd
 ```
 
 ## Before Publishing
