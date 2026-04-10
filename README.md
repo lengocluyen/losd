@@ -21,7 +21,7 @@ It does **not** contain:
 ## Directory Layout
 
 ```text
-github_public/
+losd/
 ├── README.md
 ├── PUBLIC_RELEASE_NOTES.md
 ├── .gitignore
