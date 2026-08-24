@@ -12,7 +12,16 @@ from losd import (
     LOSDPipeline,
     OntologyResources,
     normalize_surface_text,
+    parse_candidate_items,
 )
+
+
+def test_parser_keeps_candidate_that_starts_with_liste_des() -> None:
+    raw = "Liste des sous-compétences :\nListe des besoins\nGestion des retours"
+    assert parse_candidate_items(raw, max_items=12) == [
+        "Liste des besoins",
+        "Gestion des retours",
+    ]
 
 
 def build_test_pipeline() -> LOSDPipeline:
@@ -169,7 +178,7 @@ def test_reranking_prefers_direct_children_and_tracks_counts() -> None:
     assert "descriptive-statistics" not in selected
     assert parent_row["duplicate_count"] == 1
     assert parent_row["candidate_pool_size"] == 6
-    assert parent_row["hier_f1"] >= parent_row["semantic_f1"]
+    assert np.isclose(parent_row["hier_f1"], parent_row["semantic_f1"], atol=1e-6)
 
     payload = json.loads(parent_row["selected_candidates"])
     assert len(payload) == 3

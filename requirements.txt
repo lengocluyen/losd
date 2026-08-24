@@ -5,3 +5,4 @@ rdflib
 rapidfuzz
 scipy
 matplotlib
+openai>=1.0

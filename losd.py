@@ -233,22 +233,89 @@ def _safe_name(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]+", "_", value or "")
 
 
-def load_cached_candidate_texts(cache_dir: str | Path, method: str, parent_skill_id: str) -> list[str]:
+def parse_candidate_items(raw_text: str, max_items: int = 12) -> list[str]:
+    text = re.sub(r"<think>.*?</think>", "", raw_text or "", flags=re.IGNORECASE | re.DOTALL)
+    text = text.replace("```text", "").replace("```", "")
+    bullet = re.compile(r"^\s*(?:(?:[-*•—–]+)|(?:\d+\s*[.)\-:]))\s*")
+    # Only remove unmistakable boilerplate.  ``Liste des besoins`` is a valid
+    # candidate and must not be dropped merely because it starts with
+    # ``liste des``.
+    intro = re.compile(
+        r"^(?:voici\b|here\s+are\b|(?:liste\s+des|les)\s+sous[-\s]?comp\S*"
+        r"(?:\s+suivantes?)?\s*:?\s*$)",
+        flags=re.IGNORECASE,
+    )
+    cleaned_lines: list[str] = []
+    for source_line in text.splitlines():
+        line = bullet.sub("", source_line).strip().strip(" \t;,")
+        if not line or intro.match(line):
+            continue
+        cleaned_lines.append(line)
+    source_items = cleaned_lines
+    if len(cleaned_lines) == 1:
+        semicolon_items = [
+            item.strip(" \t;,")
+            for item in cleaned_lines[0].split(";")
+            if item.strip(" \t;,")
+        ]
+        if len(semicolon_items) == max_items:
+            source_items = semicolon_items
+    items: list[str] = []
+    seen: set[str] = set()
+    for item in source_items:
+        _, comparison_key = normalize_surface_text(item)
+        if not comparison_key or comparison_key in seen:
+            continue
+        seen.add(comparison_key)
+        items.append(item)
+        if len(items) >= max_items:
+            break
+    return items
+
+
+def load_cached_candidate_texts(
+    cache_dir: str | Path,
+    method: str,
+    parent_skill_id: str,
+    max_items: int = 12,
+) -> list[str]:
     cache_path = Path(cache_dir)
     if not cache_path.exists():
         return []
     parent_tail = _safe_name(parent_skill_id.rsplit("/", 1)[-1])
-    matches = sorted(cache_path.glob(f"{method}__{parent_tail}*.json"))
+    # Cache names use ``method__parent_tail__model.json``.  The delimiter after
+    # ``parent_tail`` prevents IDs such as ``00`` from matching ``0031``.
+    matches = sorted(cache_path.glob(f"{_safe_name(method)}__{parent_tail}__*.json"))
+    valid_payloads: list[list[str]] = []
     for match in matches:
         try:
             payload = json.loads(match.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
             continue
         if isinstance(payload, list):
-            return [str(item) for item in payload if isinstance(item, str)]
-        if isinstance(payload, dict) and isinstance(payload.get("items"), list):
-            return [str(item) for item in payload["items"] if isinstance(item, str)]
-    return []
+            valid_payloads.append([str(item) for item in payload if isinstance(item, str)])
+            continue
+        if not isinstance(payload, dict) or not isinstance(payload.get("items"), list):
+            continue
+        if str(payload.get("method")) != str(method):
+            continue
+        if str(payload.get("parent_uri")) != str(parent_skill_id):
+            continue
+        stored_items = [str(item) for item in payload["items"] if isinstance(item, str)]
+        raw_text = payload.get("raw_text")
+        reparsed_items = (
+            parse_candidate_items(str(raw_text), max_items=max_items)
+            if isinstance(raw_text, str) and raw_text.strip()
+            else []
+        )
+        valid_payloads.append(reparsed_items or stored_items[:max_items])
+
+    if len(valid_payloads) > 1:
+        raise RuntimeError(
+            f"Ambiguous candidate cache for method={method!r}, parent={parent_skill_id!r}: "
+            f"found {len(valid_payloads)} verified payloads"
+        )
+    return valid_payloads[0] if valid_payloads else []
 
 
 def select_parent_pool(
@@ -302,6 +369,8 @@ def load_ontology_resources(
     ttl_path: str | Path,
     embedder: TextEmbedder,
     config: LOSDConfig | None = None,
+    closure_nodes: set[str] | None = None,
+    include_retrieval_embeddings: bool = True,
 ) -> OntologyResources:
     cfg = config or LOSDConfig()
     graph = Graph()
@@ -310,6 +379,12 @@ def load_ontology_resources(
     cmo = Namespace(cfg.cmo_namespace)
     relation = getattr(cmo, cfg.relation_name)
     edges = [(str(parent), str(child)) for parent, _, child in graph.triples((None, relation, None))]
+    if not edges:
+        raise ValueError(
+            "The ontology contains no edges for "
+            f"<{cfg.cmo_namespace}{cfg.relation_name}>. Check that the TTL bundle "
+            "and LOSD relation configuration belong to the same schema version."
+        )
     uris = set()
     for parent, child in edges:
         uris.add(parent)
@@ -357,8 +432,48 @@ def load_ontology_resources(
 
     nx_graph = nx.DiGraph()
     nx_graph.add_edges_from(edges)
-    ancestors = {node: nx.ancestors(nx_graph, node) for node in nx_graph.nodes()}
-    descendants = {node: nx.descendants(nx_graph, node) for node in nx_graph.nodes()}
+    # Repeated-output evaluation only queries closure information for benchmark
+    # parents and reference children. Restricting the stored closure to those
+    # nodes avoids repeated traversals while preserving the all-node behaviour
+    # when ``closure_nodes`` is omitted.
+    closure_scope = list(nx_graph.nodes() if closure_nodes is None else closure_nodes)
+    if closure_nodes is None:
+        ancestors = {node: nx.ancestors(nx_graph, node) for node in closure_scope}
+        descendants = {node: nx.descendants(nx_graph, node) for node in closure_scope}
+    else:
+        try:
+            topological_nodes = list(nx.topological_sort(nx_graph))
+            all_ancestors: dict[str, set[str]] = {}
+            for node in topological_nodes:
+                related: set[str] = set()
+                for parent in nx_graph.predecessors(node):
+                    related.add(parent)
+                    related.update(all_ancestors[parent])
+                all_ancestors[node] = related
+
+            all_descendants: dict[str, set[str]] = {}
+            for node in reversed(topological_nodes):
+                related = set()
+                for child in nx_graph.successors(node):
+                    related.add(child)
+                    related.update(all_descendants[child])
+                all_descendants[node] = related
+
+            ancestors = {
+                node: all_ancestors.get(node, set()) for node in closure_scope
+            }
+            descendants = {
+                node: all_descendants.get(node, set()) for node in closure_scope
+            }
+        except nx.NetworkXUnfeasible:
+            ancestors = {
+                node: nx.ancestors(nx_graph, node) if node in nx_graph else set()
+                for node in closure_scope
+            }
+            descendants = {
+                node: nx.descendants(nx_graph, node) if node in nx_graph else set()
+                for node in closure_scope
+            }
     parent_children = {
         parent: gold.loc[gold["parent_uri"] == parent, "child_uri"].drop_duplicates().tolist()
         for parent in gold["parent_uri"].drop_duplicates().tolist()
@@ -366,11 +481,18 @@ def load_ontology_resources(
     depths = compute_depths(nx_graph)
 
     all_uris = sorted(uris)
-    all_texts = [normalize_surface_text(uri2text[uri])[1] or uri2text[uri] for uri in all_uris]
-    all_text_embeddings = embedder.encode(all_texts)
-
     label_texts = [normalize_surface_text(uri2label[uri])[1] or uri2label[uri] for uri in all_uris]
     label_embeddings_matrix = embedder.encode(label_texts)
+    if include_retrieval_embeddings:
+        all_texts = [
+            normalize_surface_text(uri2text[uri])[1] or uri2text[uri]
+            for uri in all_uris
+        ]
+        all_text_embeddings = embedder.encode(all_texts)
+    else:
+        # Frozen prompt manifests are used in repeated-output evaluation, so
+        # only label embeddings are needed for grounding and scoring.
+        all_text_embeddings = label_embeddings_matrix.copy()
     label_embeddings = {
         uri: label_embeddings_matrix[index] for index, uri in enumerate(all_uris)
     }
@@ -427,6 +549,7 @@ class LOSDPipeline:
             re.compile(pattern, flags=re.IGNORECASE) for pattern in self.config.negative_patterns
         ]
         self._descendant_cache: dict[str, dict[str, Any]] = {}
+        self._hier_distance_cache: dict[tuple[str, str], int] = {}
 
     def build_zero_prompt(self, parent_label: str) -> str:
         m = self.config.candidate_pool_size
@@ -739,7 +862,6 @@ class LOSDPipeline:
         records: list[dict[str, Any]],
     ) -> None:
         _, parent_key = normalize_surface_text(parent_label)
-        parent_depth = self.resources.depths.get(parent_skill_id, 0)
         for record in records:
             hard_violations: list[str] = []
             soft_violations: list[str] = []
@@ -752,11 +874,10 @@ class LOSDPipeline:
             depth_gap = None
             aligned_node = record.get("aligned_node_id")
             if aligned_node:
-                aligned_depth = self.resources.depths.get(aligned_node, parent_depth)
-                depth_gap = aligned_depth - parent_depth
+                depth_gap = self._directed_distance(parent_skill_id, aligned_node)
                 if depth_gap == 1:
                     record["viol_depth"] = False
-                elif 1 < depth_gap <= 1 + self.config.depth_tolerance:
+                elif depth_gap is not None and 1 < depth_gap <= 1 + self.config.depth_tolerance:
                     record["viol_depth"] = False
                     soft_violations.append("deep_descendant")
                 else:
@@ -774,7 +895,7 @@ class LOSDPipeline:
                 soft_violations.append("unaligned")
             if record["viol_depth"]:
                 soft_violations.append("depth")
-            if depth_gap and depth_gap > 1:
+            if depth_gap is not None and depth_gap > 1:
                 soft_violations.append(f"depth_gap_{depth_gap}")
 
             record["hard_violations"] = ";".join(hard_violations)
@@ -881,8 +1002,9 @@ class LOSDPipeline:
         selected_texts = [records[index]["raw_text"] for index in selected_indices]
         selected_uris = [
             records[index]["aligned_node_id"]
-            for index in selected_indices
             if records[index]["is_aligned"] and records[index]["aligned_node_id"]
+            else None
+            for index in selected_indices
         ]
 
         sem_precision, sem_recall, sem_f1 = self._semantic_eval(selected_texts, gold_children)
@@ -1134,30 +1256,54 @@ class LOSDPipeline:
     def _hier_partial_scores(
         self,
         parent_skill_id: str,
-        pred_uris: Sequence[str],
+        pred_uris: Sequence[str | None],
         gold_uris: Sequence[str],
     ) -> tuple[float, float, float]:
-        unique_preds = list(dict.fromkeys(pred_uris))
-        gold_set = set(gold_uris)
-        if not unique_preds or not gold_set:
+        del parent_skill_id
+        predictions = list(pred_uris)
+        gold = list(dict.fromkeys(gold_uris))
+        if not predictions or not gold:
             return 0.0, 0.0, 0.0
-        scores = []
-        for uri in unique_preds:
-            if uri in gold_set:
-                scores.append(1.0)
+
+        score_matrix = np.zeros((len(predictions), len(gold)), dtype=np.float32)
+        for row, pred_uri in enumerate(predictions):
+            if not pred_uri:
                 continue
-            if any(
-                uri in self.resources.ancestors.get(gold_uri, set())
-                or uri in self.resources.descendants.get(gold_uri, set())
-                for gold_uri in gold_set
-            ):
-                scores.append(0.5)
-            else:
-                scores.append(0.0)
-        precision = sum(scores) / max(1, len(unique_preds))
-        recall = min(sum(sorted(scores, reverse=True)[: len(gold_set)]), len(gold_set)) / max(1, len(gold_set))
+            for column, gold_uri in enumerate(gold):
+                if pred_uri == gold_uri:
+                    score_matrix[row, column] = 1.0
+                    continue
+                if pred_uri not in self.resources.descendants.get(gold_uri, set()):
+                    continue
+                distance = self._directed_distance(gold_uri, pred_uri)
+                if distance is None:
+                    continue
+                score_matrix[row, column] = 1.0 / (distance + 1.0)
+
+        if linear_sum_assignment is not None:
+            rows, columns = linear_sum_assignment(1.0 - score_matrix)
+            total_credit = float(score_matrix[rows, columns].sum())
+        else:  # pragma: no cover - normal path uses scipy
+            total_credit = self._greedy_sum(score_matrix)
+        precision = total_credit / len(predictions)
+        recall = total_credit / len(gold)
         f1 = 2 * precision * recall / (precision + recall) if (precision + recall) else 0.0
         return float(precision), float(recall), float(f1)
+
+    def _directed_distance(self, source_uri: str, target_uri: str) -> int | None:
+        if source_uri == target_uri:
+            return 0
+        cache_key = (source_uri, target_uri)
+        if cache_key in self._hier_distance_cache:
+            return self._hier_distance_cache[cache_key]
+        try:
+            distance = int(
+                nx.shortest_path_length(self.resources.graph, source_uri, target_uri)
+            )
+        except (nx.NetworkXNoPath, nx.NodeNotFound):
+            return None
+        self._hier_distance_cache[cache_key] = distance
+        return distance
 
     @staticmethod
     def _greedy_sum(matrix: np.ndarray) -> float:

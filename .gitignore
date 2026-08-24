@@ -6,7 +6,17 @@ __pycache__/
 
 # local experiment outputs
 exp_out*/
+exp_repeated_*/
 cache/
+failed_responses/
+repeated_analysis/
+embedding_cache*.pkl
+embedding_cache*.meta.json
+*.log
+
+# local credentials
+.env
+.env.*
 
 # generated LOSD outputs
 journal_extension/

@@ -170,7 +170,7 @@ class LOSDTests(unittest.TestCase):
         self.assertNotIn("descriptive-statistics", selected)
         self.assertEqual(parent_row["duplicate_count"], 1)
         self.assertEqual(parent_row["candidate_pool_size"], 6)
-        self.assertGreaterEqual(parent_row["hier_f1"], parent_row["semantic_f1"])
+        self.assertTrue(np.isclose(parent_row["hier_f1"], parent_row["semantic_f1"], atol=1e-6))
 
         payload = json.loads(parent_row["selected_candidates"])
         self.assertEqual(len(payload), 3)

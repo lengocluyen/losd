@@ -11,8 +11,18 @@ Before uploading this directory to a public GitHub repository, check the followi
 3. Decide whether to keep `sample_results/`.
    It is useful for readers and reviewers, but you may prefer to reduce repository size or publish only summary CSVs.
 
-4. Decide whether to add notebooks separately.
-   They were intentionally excluded here because the public package is centered on the reusable LOSD pipeline rather than exploratory local work.
+4. The repeated-run and repeated-analysis scripts are included, but the paid
+   model-response caches and embedding cache are not. Reproducing the full
+   study therefore requires fresh provider access and may incur charges.
 
-5. Review model-specific references.
-   The public package excludes private caches and local batch outputs. If you later add cached generations, verify that they do not include secrets, provider-specific tokens, or unpublished annotations.
+5. Review model-specific references and endpoint availability.
+   The wrappers record the model/provider configurations used in the study,
+   but providers may later retire or reroute those endpoints.
+
+6. Run a secret scan before publishing. Never commit `OPENROUTER_API_KEY`,
+   `.env` files, terminal logs containing authorization headers, or provider
+   account identifiers.
+
+7. If cached generations are published later, preserve their prompt/configuration
+   hashes and verify that they contain no secrets, unpublished annotations, or
+   material that cannot be redistributed.
